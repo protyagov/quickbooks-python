@@ -3,30 +3,7 @@ import xml.etree.ElementTree as ET
 
 import xmltodict
 
-import json
-
-try:
-
-    """
-    This main module is for talking to the QBOv3 API. There are other
-    supporting modules for doing stuff with the results or read and query
-    operations and for getting stuff ready for update, delete,
-    and create operations
-    """
-
-    import massage
-    import reference
-    import report
-
-except:
-
-    """
-    There are convenience-function calls to these companion modules, all
-    listed at the bottom here, and obvi those won't work alone, but
-    the rest of this module should be standalone
-    """
-
-    pass
+import json, time
 
 class QuickBooks():
     """A wrapper class around Python's Rauth module for Quickbooks the API"""
@@ -81,6 +58,11 @@ class QuickBooks():
         else:
             self.verbose = False
 
+        if 'verbosity' in args:
+            self.verbosity = args['verbosity']
+        else:
+            self.verbosity = 0
+
         self._BUSINESS_OBJECTS = [
 
             "Account","Attachable","Bill","BillPayment",
@@ -91,6 +73,21 @@ class QuickBooks():
             "SalesReceipt","TaxCode","TaxRate","Term",
             "TimeActivity","Vendor","VendorCredit"
 
+        ]
+
+        self._NAME_LIST_OBJECTS = [
+
+            "Account", "Class", "Customer", "Department", "Employee", "Item",
+            "PaymentMethod", "TaxCode", "TaxRate", "Term", "Vendor"
+            
+        ]
+
+        self._TRANSACTION_OBJECTS = [
+
+            "Bill", "BillPayment", "CreditMemo", "Estimate", "Invoice",
+            "JournalEntry", "Payment", "Purchase", "PurchaseOrder", 
+            "SalesReceipt", "TimeActivity", "VendorCredit"
+        
         ]
 
 
@@ -108,9 +105,12 @@ class QuickBooks():
                 authorize_url = self.authorize_url,
                 base_url = None
             )
-        self.request_token, self.request_token_secret = self.qbService.get_request_token(
-                params={'oauth_callback':self.callback_url}
-            )
+        
+        rt, rts = self.qbService.get_request_token(
+            params={'oauth_callback':self.callback_url}
+        )
+
+        self.request_token, self.request_token_secret = [rt, rts]
 
         return self.qbService.get_authorize_url(self.request_token)
 
@@ -130,18 +130,25 @@ class QuickBooks():
         return session
 
     def create_session(self):
-        if self.consumer_secret and self.consumer_key and self.access_token_secret and self.access_token:
-            session = OAuth1Session(self.consumer_key,
-                self.consumer_secret,
-                self.access_token,
-                self.access_token_secret,
-                )
-            self.session = session
+        if self.consumer_secret and self.consumer_key and \
+           self.access_token_secret and self.access_token:
+            self.session = OAuth1Session(self.consumer_key,
+                                         self.consumer_secret,
+                                         self.access_token,
+                                         self.access_token_secret)
+            
         else:
+            
+            # shouldn't there be a workflow somewhere to GET the auth tokens?
+
+            # add that or ask someone on oDesk to build it...
+
             raise Exception("Need four creds for Quickbooks.create_session.")
+        
         return self.session
 
-    def query_fetch_more(self, r_type, header_auth, realm, qb_object, original_payload =''):
+    def query_fetch_more(self, r_type, header_auth, realm, 
+                         qb_object, original_payload =''):
         """ Wrapper script around keep_trying to fetch more results if 
         there are more. """
         
@@ -191,6 +198,12 @@ class QuickBooks():
                     print "\n\n ERROR", r_dict
                     pass
 
+
+            if self.verbose:
+
+                print "(batch begins with record %d)" % start_position
+
+
             # Just some math to prepare for the next iteration
             if start_position == 0:
                 start_position = 1
@@ -198,7 +211,6 @@ class QuickBooks():
             start_position = start_position + max_results
             payload = "%s STARTPOSITION %s MAXRESULTS %s" % (original_payload, 
                     start_position, max_results)
-
 
             data_set += r_dict['QueryResponse'][qb_object]
 
@@ -223,13 +235,23 @@ class QuickBooks():
 
         if self.verbose:
 
-            print "About to create a %s object with this request_body:" \
+            print "About to create a(n) %s object with this request_body:" \
                 % qbbo
             print request_body
 
-        new_object = self.hammer_it("POST", url, request_body, content_type)\
-                     [qbbo]
+        response = self.hammer_it("POST", url, request_body, content_type)
         
+        if qbbo in response:
+
+            new_object = response[qbbo]
+
+        else:
+
+            print "It looks like the create failed. Here's the result:"
+            print response
+        
+            return None
+
         new_Id     = new_object["Id"]
 
         attr_name = qbbo+"s"
@@ -239,7 +261,7 @@ class QuickBooks():
             if self.verbose:
                 print "Creating a %ss attribute for this session." % qbbo
 
-            setattr(self, attr_name, {new_Id:new_object})
+            self.get_objects(qbbo).update({new_Id:new_object})
 
         else:
             
@@ -252,29 +274,179 @@ class QuickBooks():
 
         return new_object
 
-    def read_object(self, qbbo, object_id):
+    def read_object(self, qbbo, object_id, content_type = "json"):
         """Makes things easier for an update because you just do a read,
         tweak the things you want to change, and send that as the update
         request body (instead of having to create one from scratch)."""
 
-        pass
+        url = "https://quickbooks.api.intuit.com/v3/company/%s/%s/%s" % \
+              (self.company_id, qbbo.lower(), object_id)
 
-    def update_object(self, qbbo, object_id, request_body,
-                      content_type = "json"):
-        """Generally before calling this, you want to call the read_object
+        response = self.hammer_it("GET", url, None, content_type)
+
+        if not qbbo in response:
+
+            return response
+
+        #otherwise we don't need the time (and outer shell)
+        
+        return response[qbbo]
+
+    def update_object(self, qbbo, Id, update_dict, content_type = "json"):
+        """
+        Generally before calling this, you want to call the read_object
         command on what you want to update. The alternative is forming a valid
-        update request_body from scratch, which doesn't look like fun to me."""
+        update request_body from scratch, which doesn't look like fun to me.
+        """
 
-        pass
+        if qbbo not in self._BUSINESS_OBJECTS:
+            raise Exception("%s is not a valid QBO Business Object." % qbbo,
+                            " (Note that this validation is case sensitive.)")
 
-    def delete_object(self, qbbo, request_body, content_type = "json"):
+        """
+        url = "https://qb.sbfinance.intuit.com/v3/company/%s/%s" % \
+              (self.company_id, qbbo.lower()) + "?operation=update"
+
+        url = "https://quickbooks.api.intuit.com/v3/company/%s/%s" % \
+              (self.company_id, qbbo.lower()) + "?requestid=%s" % Id
+        """
+        
+        #see this link for url troubleshooting info:
+        #http://stackoverflow.com/questions/23333300/whats-the-correct-uri-
+        # for-qbo-v3-api-update-operation/23340464#23340464
+
+        url = "https://quickbooks.api.intuit.com/v3/company/%s/%s" % \
+              (self.company_id, qbbo.lower())
+
+        #work from the existing account json dictionary
+        e_dict = self.get_entity(qbbo, Id)
+
+        udd = json.loads(update_dict)
+
+        e_dict.update(udd)
+
+        request_body = json.dumps(e_dict, indent=4)
+
+        if self.verbose:
+
+            print "About to update %s Id %s with this request_body:" \
+                % (qbbo, Id)
+
+            print request_body
+
+        response = self.hammer_it("POST", url, request_body, content_type)
+
+        if qbbo in response:
+
+            new_object = response[qbbo]
+
+        else:
+
+            print "It looks like the create failed. Here's the result:"
+            print response
+        
+            return None
+
+        attr_name = qbbo+"s"
+        
+        if not hasattr(self,attr_name):
+
+            if self.verbose:
+                print "Creating a %ss attribute for this session." % qbbo
+
+            self.get_objects(attr_name).update({new_Id:new_object})
+
+        else:
+            
+            if self.verbose:
+                print "Adding this new %s to the existing set of them." \
+                    % qbbo
+                print json.dumps(new_object, indent=4)
+                
+            getattr(self, attr_name)[Id] = new_object
+
+        return new_object
+
+    def delete_object(self, qbbo, object_id, content_type = "json"):
         """Don't need to give it an Id, just the whole object as returned by
         a read operation."""
 
-        pass
+        json_dict = self.read_object(qbbo, object_id)
+
+        if not 'Id' in json_dict:
+
+            return "NO OBJECT FOUND"
+
+        request_body = json.dumps(json_dict, indent=4)
+
+        url = "https://quickbooks.api.intuit.com/v3/company/%s/%s" % \
+              (self.company_id, qbbo.lower())
+
+        response = self.hammer_it("POST", url, request_body, content_type,
+                                  **{"params":{"operation":"delete"}})
+
+        if not qbbo in response:
+
+            return response
+        
+        return response[qbbo]
+
+    def upload_file(self, path, name = "same", upload_type = "automatic",
+                    qbbo = None, Id = None):
+        """
+        Uploads a file that can be linked to a specific transaction (or other
+         entity probably), or not...
+
+        Either way, it should return the id the attachment.
+        """
+
+        url = "https://quickbooks.api.intuit.com/v3/company/%s/upload" % \
+              self.company_id
+
+        filename         = path.rsplit("/",1)[-1]
+        
+        bare_name, extension = filename.rsplit(".",1)
+
+        if upload_type == "automatic":
+
+            upload_type = "application/%s" % extension
+
+        if name == "same":
+
+            name = bare_name
+
+        files = {
+            
+            'file' : (
+                'my_invoice.pdf', 
+                open(path, 'rb'),
+                'application/pdf'
+            )
+
+        }
+
+        self.verbosity = 10       
+
+        request_body = files
+
+        result = self.hammer_it("POST", url, request_body, 
+                                "multipart/formdata", files=files) 
+
+        attachment_id = None
+
+        return attachment_id
+
+    def download_file(self, attachment_id, destination_path = "automatic"):
+        """
+        Download a file to the requested (or default) directory, then also
+         return a download link for convenience.
+        """
+        link = None
+
+        return link
 
     def hammer_it(self, request_type, url, request_body, content_type,
-                  accept = 'json'):
+                  accept = 'json', files=None, **req_kwargs):
         """
         A slim version of simonv3's excellent keep_trying method. Among other
          trimmings, it assumes we can only use v3 of the
@@ -285,46 +457,114 @@ class QuickBooks():
         if self.session != None:
             session = self.session
         else:
+
+            #print "Creating new session! (Why wouldn't we have a session!?)"
+            #because __init__doesn't do it!
+
             session = self.create_session()
             self.session = session
 
         #haven't found an example of when this wouldn't be True, but leaving
         #it for the meantime...
+
         header_auth = True
 
         trying       = True
-        print_error = False
+        print_error  = False
 
         tries = 0
 
         while trying:
+
             tries += 1
-                  
+
+            if tries > 1:
+
+                #we don't want to get shut out...
+
+                if self.verbose:
+                    
+                    pass
+                    #print "Sleeping for a second to appease the server."
+                    
+                time.sleep(1)
+                
+
+            if self.verbose and tries > 1:
+                print "(this is try#%d)" % tries
 
             headers = {
-                    'Content-Type': 'application/%s' % content_type,
-                    'Accept': 'application/%s' % accept
+
+                'Accept': 'application/%s' % accept
+
                 }
 
-            r = session.request(request_type, url, header_auth,
-                                     self.company_id, headers = headers,
-                                     data = request_body)
+            if not request_type == "GET" and files == None:
+
+                headers.update({ 
+
+                    'Content-Type': 'application/%s' % content_type
+
+                })
+
+            elif not files == None:
+
+                headers.update({ 
+
+                    'Content-Type': 'application/application/multipart/form-data'
+
+                })
+
+                request_body = files
+
+            my_r = session.request(request_type, url, header_auth,
+                                self.company_id, headers = headers,
+                                data = request_body, **req_kwargs)
+
+            #import ipdb
+            #ipdb.set_trace()
 
             if accept == "json":
-                result = r.json()
-                
-                if "Fault" in result and result["Fault"]\
-                   ["type"] == "ValidationFault":
 
-                    if self.verbose:
+                try:
+
+                    result = my_r.json()
+
+                except:
+
+                    if self.verbose or self.verbosity > 0:
+                        print my_r,
+
+                        if my_r.status_code in [503]:
+                            
+                            print " (Service Unavailable)"
+
+                        elif my_r.status_code in [401]:
+                            
+                            print " (Unauthorized -- a dubious response)"
+
+                        else:
+
+                            print " (json parse failed)"
+
+                    if self.verbosity > 8:
+
+                        print my_r.text
+
+                    result = {"Fault" : {"type":"(inconclusive)"}}
+                    
+                if "Fault" in result and \
+                   "type" in result["Fault"] and \
+                   result["Fault"]["type"] == "ValidationFault":
+
+                    if self.verbose or self.verbosity > 0:
 
                         print "Fault alert!"
 
                     trying = False
                     print_error = True
                     
-
-                elif tries >= 6:
+                elif tries >= 10:
 
                     trying = False
                   
@@ -336,7 +576,8 @@ class QuickBooks():
                     #sounds like a success
                     trying = False
 
-                if not trying and print_error:
+                if (not trying and print_error) or \
+                   self.verbosity > 8:
 
                     print json.dumps(result, indent=1)
 
@@ -345,7 +586,6 @@ class QuickBooks():
                     % accept
 
         return result
-
 
     def keep_trying(self, r_type, url, header_auth, realm, payload=''):
         """ Wrapper script to session.request() to continue trying at the QB
@@ -361,12 +601,27 @@ class QuickBooks():
         tries = 0
         while trying:
             tries += 1
+
+            if tries > 1:
+
+                if self.verbose:
+
+                    pass
+                    #print "Sleeping for a second to appease the server."
+
+                time.sleep(1)
+
+            if self.verbose and tries > 1:
+                print "(this is try#%d)" % tries
+
+            
             if "v2" in url:
-                r = session.request(r_type, url, header_auth, realm, data=payload)
+                r = session.request(r_type, url, header_auth, 
+                                    realm, data=payload)
                 
                 r_dict = xmltodict.parse(r.text)
                 
-                if "FaultInfo" not in r_dict or tries > 4:
+                if "FaultInfo" not in r_dict or tries > 10:
                     trying = False
             else:
                 headers = {
@@ -376,17 +631,40 @@ class QuickBooks():
 
                 #print r_type,url,header_auth,realm,headers,payload
                 #quit()
-                r = session.request(r_type, url, header_auth, realm, headers = headers, data = payload)
+                r = session.request(r_type, url, header_auth, realm, 
+                                    headers = headers, data = payload)
                 
-                r_dict = r.json()
+                try:
 
-                if "Fault" not in r_dict or tries >= 5:
+                    r_dict = r.json()
+
+                except:
+
+                    #I've seen, e.g. a ValueError ("No JSON object could be
+                    #decoded"), but there could be other errors here...
+                    
+                    if self.verbose:
+                        
+                        pass
+                        
+                        #print "failed to decode JSON object..."
+                        
+                        #import traceback
+                        #traceback.print_exc()
+
+                    r_dict = {"Fault":{"type":"(Inconclusive)"}}
+
+                if "Fault" not in r_dict or tries > 10:
+
                     trying = False
+
                 elif "Fault" in r_dict and r_dict["Fault"]["type"]==\
                      "AUTHENTICATION":
+
                     #Initially I thought to quit here, but actually
                     #it appears that there are 'false' authentication
                     #errors all the time and you just have to keep trying...
+
                     trying = True
 
         if "Fault" in r_dict:
@@ -396,8 +674,12 @@ class QuickBooks():
 
     def fetch_customer(self, pk):
         if pk:
-            url = self.base_url_v3 + "/company/%s/customer/%s" % (self.company_id, pk)
-            # url = self.base_url_v2 + "/resource/customer/v2/%s/%s" % ( self.company_id, pk)
+            url = self.base_url_v3 + "/company/%s/customer/%s" % \
+                  (self.company_id, pk)
+
+            # url = self.base_url_v2 + "/resource/customer/v2/%s/%s" % \
+            #    ( self.company_id, pk)
+            
             r_dict = self.keep_trying("GET", url, True, self.company_id)
             return r_dict['Customer']
 
@@ -427,18 +709,27 @@ class QuickBooks():
 
                 trying = True
 
-                # Because the QB API is so iffy, let's try until we get an non-error
+                # Because the QB API is so iffy, let's try until we get an 
+                # non-error
 
                 # Rewrite this to use same code as above.
                 while trying:
-                    r = session.request("POST", url, header_auth = True, data = payload, realm = self.company_id)
+                    r = session.request("POST", url, header_auth = True, 
+                                        data = payload, realm = self.company_id)
+                    
                     root = ET.fromstring(r.text)
-                    if root[1].tag != "{http://www.intuit.com/sb/cdm/baseexceptionmodel/xsd}ErrorCode":
+                    
+                    if root[1].tag != "{http://www.intuit.com/sb/" + \
+                       "cdm/baseexceptionmodel/xsd}ErrorCode":
+                        
                         trying = False
+                    
                     else:
+                    
                         print "Failed"
 
                 session.close()
+                
                 qb_name = "{http://www.intuit.com/sb/cdm/v2}"
 
                 for child in root:
@@ -448,10 +739,13 @@ class QuickBooks():
                             more = False
                             print "Found all customers"
 
-                    if child.tag == "{http://www.intuit.com/sb/cdm/qbo}CdmCollections":
+                    if child.tag == "{http://www.intuit.com/sb/" + \
+                       "cdm/qbo}CdmCollections":
+                        
                         for customer in child:
 
-                            customers += [xmltodict.parse(ET.tostring(customer))]
+                            customers += [xmltodict.parse(
+                                ET.tostring(customer))]
                                 
                 counter += 1
 
@@ -464,7 +758,8 @@ class QuickBooks():
                 "PageNum":str(page_num),
                 }
 
-            r = session.request("POST", url, header_auth = True, data = payload, realm = self.company_id)
+            r = session.request("POST", url, header_auth = True, 
+                                data = payload, realm = self.company_id)
 
             root = ET.fromstring(r.text)
 
@@ -475,10 +770,11 @@ class QuickBooks():
 
     def fetch_sales_term(self, pk):
         if pk:
-            url = self.base_url_v2 + "/resource/sales-term/v2/%s/%s" % ( self.company_id, pk)
+            url = self.base_url_v2 + "/resource/sales-term/v2/%s/%s" % \
+                  ( self.company_id, pk)
+            
             r_dict = self.keep_trying("GET", url, True, self.company_id)
             return r_dict
-
 
     def fetch_invoices(self, **args):
         qb_object = "Invoice"
@@ -509,12 +805,11 @@ class QuickBooks():
                 customer = self.fetch_customer(args['query']['customer'])
 
                 # payload = "SELECT * FROM %s" % (qb_object)
-                payload = "SELECT * FROM %s WHERE MetaData.CreateTime > '%s'"% (
-                        qb_object, 
-                        customer['MetaData']['CreateTime']
-                        )
+                payload = "SELECT * FROM %s WHERE MetaData.CreateTime > '%s'" \
+                          % (qb_object, customer['MetaData']['CreateTime'])
 
             else:
+                
                 payload = "SELECT * FROM %s" % (qb_object)
 
             unfiltered_purchases = self.query_fetch_more("POST", True, 
@@ -530,16 +825,20 @@ class QuickBooks():
                         ):
                         for line in entry['Line']:
                             if (
-                                'AccountBasedExpenseLineDetail' in line and 
-                                'CustomerRef' in line['AccountBasedExpenseLineDetail'] and
-                                line['AccountBasedExpenseLineDetail']['CustomerRef']['value'] == args['query']['customer']
+                                'AccountBasedExpenseLineDetail' in line and \
+                                'CustomerRef' in \
+                                    line['AccountBasedExpenseLineDetail'] and \
+                                    line['AccountBasedExpenseLineDetail']\
+                                    ['CustomerRef']['value'] == \
+                                    args['query']['customer']
                                 ):
                                 
                                 filtered_purchases += [entry]
 
-                        
                 return filtered_purchases
+
             else:
+
                 return unfiltered_purchases
 
     def fetch_journal_entries(self, **args):
@@ -547,8 +846,8 @@ class QuickBooks():
         with QB, you're still going to have to filter these results for the
         actual entity you're interested in.
 
-        :param query: a dictionary that includes 'customer', and the QB id of the
-            customer
+        :param query: a dictionary that includes 'customer', 
+        and the QB id of the customer
         """
 
         payload = {}
@@ -573,14 +872,16 @@ class QuickBooks():
 
             url = self.base_url_v3 + "/company/%s/query" % (self.company_id)
 
-            r_dict = self.keep_trying("POST", url, True, self.company_id, payload)
+            r_dict = self.keep_trying("POST", url, True, self.company_id, 
+                                      payload)
             
             if int(r_dict['QueryResponse']['totalCount']) < max_results:
                 more = False
             if start_position == 0:
                 start_position = 1
             start_position = start_position + max_results
-            payload = "%s STARTPOSITION %s MAXRESULTS %s" % (original_payload, start_position, max_results)
+            payload = "%s STARTPOSITION %s MAXRESULTS %s" % \
+                      (original_payload, start_position, max_results)
             journal_entry_set = r_dict['QueryResponse']['JournalEntry']
             
             # This has to happen because the QBO API doesn't support 
@@ -590,14 +891,19 @@ class QuickBooks():
                     for line in entry['Line']:
                         if 'JournalEntryLineDetail' in line:
                             if 'ClassRef' in line['JournalEntryLineDetail']:
-                                if args['query']['class'] in line['JournalEntryLineDetail']['ClassRef']['name']:
+                                if args['query']['class'] in \
+                                   line['JournalEntryLineDetail']\
+                                   ['ClassRef']['name']:
+                                    
                                     journal_entries += [entry]
+                                    
                                     break
+
             else:
+
                 journal_entries = journal_entry_set
 
         return journal_entries
-
 
     def fetch_bills(self, **args):
         """Fetch the bills relevant to this project."""
@@ -621,7 +927,8 @@ class QuickBooks():
 
             url = self.base_url_v3 + "/company/%s/query" % (self.company_id)
             
-            r_dict = self.keep_trying("POST", url, True, self.company_id, payload)
+            r_dict = self.keep_trying("POST", url, True, 
+                                      self.company_id, payload)
             counter = counter + 1
             if int(r_dict['QueryResponse']['maxResults']) < max_results:
                 more = False
@@ -657,8 +964,23 @@ class QuickBooks():
                                     break
             else:
                 bills += bill
-        # print bills
+      
         return bills
+
+    def get_report(self, report_name, params = {}):
+        """
+        Tries to use the QBO reporting API:
+        https://developer.intuit.com/docs/0025_quickbooksapi/
+         0050_data_services/reports
+        """
+
+        url = "https://quickbooks.api.intuit.com/v3/company/%s/" % \
+              self.company_id + "reports/%s" % report_name
+
+        added_params_count = 0
+
+        return self.hammer_it("GET", url, None, "json",
+                              **{"params" : params})
 
     def query_objects(self, business_object, params={}, query_tail = ""):
         """
@@ -733,7 +1055,11 @@ class QuickBooks():
 
         return results
 
-    def get_objects(self, qbbo, requery=False, params = {}, query_tail = ""):
+    def get_objects(self,
+                    qbbo,
+                    requery=False,
+                    params = {},
+                    query_tail = ""):
         """
         Rather than have to look up the account that's associate with an
         invoice item, for example, which requires another query, it might
@@ -747,7 +1073,13 @@ class QuickBooks():
         #case-sensitive to what Intuit's documentation uses
 
         if qbbo not in self._BUSINESS_OBJECTS:
+
             raise Exception("%s is not a valid QBO Business Object." % qbbo) 
+
+        elif qbbo in self._NAME_LIST_OBJECTS and query_tail == "":
+
+            #to avoid confusion from 'deleted' accounts later...
+            query_tail = "WHERE Active IN (true,false)"
 
         attr_name = qbbo+"s"
 
@@ -775,8 +1107,11 @@ class QuickBooks():
             
         return getattr(self,attr_name)
 
-    def object_dicts(self, qbbo_list = [], requery=False,
-                     params={}, query_tail=""):
+    def object_dicts(self,
+                     qbbo_list = [],
+                     requery=False,
+                     params={},
+                     query_tail=""):
         """
         returns a dict of dicts of ALL the Business Objects of
         each of these types (filtering with params and query_tail)
@@ -789,7 +1124,10 @@ class QuickBooks():
             if qbbo == "TimeActivity":
                 #for whatever reason, this failed with some basic criteria, so
                 query_tail = ""
-
+            elif qbbo in self._NAME_LIST_OBJECTS and query_tail == "":
+                #just something to avoid confusion from 'deleted' accounts later
+                query_tail = "WHERE Active IN (true,false)"
+        
             object_dicts[qbbo] = self.get_objects(qbbo,
                                                   requery,
                                                   params,
@@ -797,7 +1135,10 @@ class QuickBooks():
 
         return object_dicts
 
-    def names(self, requery=False, params = {}, query_tail = ""):
+    def names(self, 
+              requery=False,
+              params = {}, 
+              query_tail = "WHERE Active IN (true,false)"):
         """
         get a dict of every Name List Business Object (of every type)
 
@@ -806,17 +1147,14 @@ class QuickBooks():
         returned dict has two dimensions:
         name = names[qbbo][Id]
         """
-      
 
-        name_list_objects = [
-           "Account", "Class", "Customer", "Department", "Employee", "Item",
-            "PaymentMethod", "TaxCode", "TaxRate", "Term", "Vendor"
-        ]
-
-        return self.object_dicts(name_list_objects, requery,
+        return self.object_dicts(self._NAME_LIST_OBJECTS, requery,
                                  params, query_tail)
 
-    def transactions(self, requery=False, params = {}, query_tail = ""):
+    def transactions(self,
+                     requery=False,
+                     params = {},
+                     query_tail = ""):
         """
         get a dict of every Transaction Business Object (of every type)
 
@@ -825,128 +1163,7 @@ class QuickBooks():
         returned dict has two dimensions:
         transaction = transactions[qbbo][Id]
         """
-        transaction_objects = [
-            "Bill", "BillPayment", "CreditMemo", "Estimate", "Invoice",
-            "JournalEntry", "Payment", "Purchase", "PurchaseOrder", 
-            "SalesReceipt", "TimeActivity", "VendorCredit"
-        ]
 
-        return self.object_dicts(transaction_objects, requery,
+        return self.object_dicts(self._TRANSACTION_OBJECTS, requery,
                                         params, query_tail)
 
-    # -------------------------------------------------------------
-    #below are the convenience-function calls that have dependencies
-    # -------------------------------------------------------------
-
-    def quick_report(self, filter_attributes = {}):
-        """see report.quick_report.__doc__"""
-
-        return report.quick_report(self, filter_attributes)
-
-    def chart_of_accounts(self, attrs = "strict"):
-        """see report.chart_of_accounts"""
-
-        return report.chart_of_accounts(self, attrs)
-
-    def name_list(self):
-        """
-        see massage.name_list()
-
-        Note that this sets some attributes of the session object!
-        """
-
-        return massage.name_list(self)
-
-    def ledgerize(self, transaction, headers=False):
-        """see ledgerize.__doc__ in the massage module"""
-        
-        return massage.ledgerize(transaction, self, headers)
-
-    def ledger_lines(self, qbbo=None, Id=None, line_number=None, headers=False,
-                     **kwargs):
-        """
-        see massage.ledger_lines.__doc__
-        Note that this sets some attributes of this session object, including:
-         self.ledger_lines_dict (for future reference)
-         self.earliest_date, self.latest_date (for efficiency in reporting)
-        """
-
-        return massage.ledger_lines(self, qbbo, Id, line_number, headers,
-                                    **kwargs)
-                    
-    def entity_list(self,raw_entities_dict):
-        """see entity_list.__doc__ in the massage module"""
-
-        return massage.entity_list(raw_entities_dict)
-
-    def get_entity(self, qbbo, entity_id):
-        """
-        Note that this queries all objects of this type (for later convenience)!
-        
-        Creates (or refers to an attribute that's) a dictionary
-         of all entities (names and transactions) keyed by
-         Id (because every object has a unique one).
-        
-        Returns a tuple in the form (qbbo_type, raw_object_dict)
-        """
-        if not hasattr(self, qbbo+"s"):
-
-            self.get_objects(qbbo)
-
-        return getattr(self,qbbo+"s")[entity_id]
-
-    def get_ap_account(self,name=False):
-        """
-        In QBO, you can only use one A/P account with "Bills" (though you can
-        pro'ly use others with JEs and other entries if you want to.
-        
-        This figures out which A/P account that is (by ID)
-        """
-        if not hasattr(self,"ap_account_id"):
-            
-            Bills        = self.get_objects("Bill")
-
-            first_bill   = Bills[Bills.keys()[0]]
-
-            self.ap_account_id = first_bill["APAccountRef"]["value"]
-            self.ap_account_name   = first_bill["APAccountRef"]["name"]
-
-        if name:
-            return self.ap_account_name
-        else:
-            return self.ap_account_id
-
-    def get_ar_account(self,name=False):
-        """
-        Haven't found anything that actually shows the AR account in QBO...
-        """
-        return "Accounts Receivable"
-
-
-    def gl(self):
-        """
-        For now, this just returns all the lines (we can get...excludes such
-        things as deposits and transfers...thanks, Intuit!)
-        """
-        
-        #the True gives us headers!
-        unsorted_gl = self.ledger_lines(None, None, None, True)
-
-        #sort the thing by account THEN by date, obvi
-
-        sorted_gl   = unsorted_gl   #just for now...fix later!
-
-        return sorted_gl
-
-    def pnl(self, period = "YEARLY", start_date="first", end_date="last",
-            **kwargs):
-        """
-        Again, subject to the missing transactions, this tallies things by
-        period (which is initially either MONTHLY or YEARLY, but will
-        eventually be arbitrary, hopefully)
-        """
-
-        #kwargs can include filter strings (to do a pnl of only recent
-        #additions, for example)
-
-        return report.pnl(self, period, start_date, end_date, **kwargs)
