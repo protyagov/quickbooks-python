@@ -413,13 +413,26 @@ class QuickBooks():
 
         return attachment_id
 
-    def download_file(self, attachment_id, destination_path = "automatic"):
+    def download_file(self, attachment_id, destination_path=""):
         """
         Download a file to the requested (or default) directory, then also
          return a download link for convenience.
         """
-        link = None
+        url = "https://quickbooks.api.intuit.com/v3/company/%s/download/%s" % \
+              (self.company_id, attachment_id)
 
+        # Custom accept for file link!
+        link =  self.hammer_it("GET", url, None, "json", accept="filelink")
+
+        # No session required for file download
+        my_r = requests.get(link)
+        
+        if my_r.status_code:
+            filename = my_r.url.split("%2F")[2].split("?")[0]
+            with open(destination_path + filename, 'wb') as f:
+                for chunk in my_r.iter_content(1024):
+                    f.write(chunk)
+                    
         return link
 
     def hammer_it(self, request_type, url, request_body, content_type,
