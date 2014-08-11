@@ -432,14 +432,17 @@ class QuickBooks():
         # No session required for file download
         success = False
         tries_remaining = 6
-        
 
         while not success and tries_remaining >= 0:
+
+            if self.verbosity > 0 and tries_remaining < 6:
+
+                print "This is attempt #%d to download Attachable id %s." % \
+                    (6-tries_remaining+1, attachment_id)
 
             try:
 
                 my_r = requests.get(link)
-                success = True
 
                 if alternate_name:
 
@@ -454,14 +457,19 @@ class QuickBooks():
                     for chunk in my_r.iter_content(1024):
                         f.write(chunk)
 
+                success = True
+
             except:
 
                 tries_remaining -= 1
+                time.sleep(1)
                 
                 if tries_remaining == 0:
 
+                    print "Max retries reached..."
+
                     raise
-                                    
+                                   
         return link
 
     def hammer_it(self, request_type, url, request_body, content_type,
@@ -607,7 +615,18 @@ class QuickBooks():
                     print json.dumps(result, indent=1)
 
             elif accept== 'filelink':
-                return my_r.text
+
+                if not "Fault" in my_r.text or tries >= 10:
+
+                    trying = False
+
+                else:
+
+                    print "Failed to get file link."
+                    if self.verbosity > 4:
+                        print my_r.text
+
+                result = my_r.text
 
             else:
                 raise NotImplementedError("How do I parse a %s response?" \
