@@ -3,6 +3,8 @@ import xml.etree.ElementTree as ET
 
 import xmltodict
 
+import requests, urllib
+
 import json, time
 
 class QuickBooks():
@@ -426,24 +428,40 @@ class QuickBooks():
 
         # Custom accept for file link!
         link =  self.hammer_it("GET", url, None, "json", accept="filelink")
-
-        # No session required for file download
-        my_r = requests.get(link)
         
-        if my_r.status_code:
+        # No session required for file download
+        success = False
+        tries_remaining = 6
+        
 
-            if alternate_name:
+        while not success and tries_remaining >= 0:
 
-                filename = alternate_name
+            try:
 
-            else:
+                my_r = requests.get(link)
+                success = True
 
-                filename = my_r.url.split("%2F")[2].split("?")[0]
+                if alternate_name:
 
-            with open(destination_path + filename, 'wb') as f:
-                for chunk in my_r.iter_content(1024):
-                    f.write(chunk)
-                    
+                    filename = alternate_name
+
+                else:
+
+                    filename = my_r.url.split("%2F")[2].split("?")[0]
+                    filename = urllib.unquote(filename)
+
+                with open(destination_dir + filename, 'wb') as f:
+                    for chunk in my_r.iter_content(1024):
+                        f.write(chunk)
+
+            except:
+
+                tries_remaining -= 1
+                
+                if tries_remaining == 0:
+
+                    raise
+                                    
         return link
 
     def hammer_it(self, request_type, url, request_body, content_type,
