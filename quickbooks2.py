@@ -413,7 +413,10 @@ class QuickBooks():
 
         return attachment_id
 
-    def download_file(self, attachment_id, destination_path=""):
+    def download_file(self,
+                      attachment_id, 
+                      destination_dir = '',
+                      alternate_name = ''):
         """
         Download a file to the requested (or default) directory, then also
          return a download link for convenience.
@@ -428,7 +431,15 @@ class QuickBooks():
         my_r = requests.get(link)
         
         if my_r.status_code:
-            filename = my_r.url.split("%2F")[2].split("?")[0]
+
+            if alternate_name:
+
+                filename = alternate_name
+
+            else:
+
+                filename = my_r.url.split("%2F")[2].split("?")[0]
+
             with open(destination_path + filename, 'wb') as f:
                 for chunk in my_r.iter_content(1024):
                     f.write(chunk)
@@ -483,9 +494,15 @@ class QuickBooks():
             if self.verbose and tries > 1:
                 print "(this is try#%d)" % tries
 
-            headers = {
+            if accept == "filelink":
 
-                'Accept': 'application/%s' % accept
+                headers = {}
+
+            else:
+
+                headers = {
+
+                    'Accept': 'application/%s' % accept
 
                 }
 
@@ -571,9 +588,12 @@ class QuickBooks():
 
                     print json.dumps(result, indent=1)
 
+            elif accept== 'filelink':
+                return my_r.text
+
             else:
-                raise NotImplementedError("How do I parse a %s response?") \
-                    % accept
+                raise NotImplementedError("How do I parse a %s response?" \
+                    % accept)
 
         return result
 
