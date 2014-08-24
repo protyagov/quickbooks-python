@@ -1,11 +1,10 @@
 from rauth import OAuth1Session, OAuth1Service
 import xml.etree.ElementTree as ET
-
 import xmltodict
-
+from xml.dom import minidom
 import requests, urllib
-
 import json, time
+import textwrap # for uploading files
 
 class QuickBooks():
     """A wrapper class around Python's Rauth module for Quickbooks the API"""
@@ -382,43 +381,29 @@ class QuickBooks():
         url = "https://quickbooks.api.intuit.com/v3/company/%s/upload" % \
               self.company_id
 
-        filename         = path.rsplit("/",1)[-1]
-
-        bare_name, extension = filename.rsplit(".",1)
+        bare_name, extension = path.rsplit("/",1)[-1].rsplit(".",1)
 
         if upload_type == "automatic":
-
             upload_type = "application/%s" % extension
 
         if name == "same":
-
             name = bare_name
 
-        files = {
 
-            'file' : (
-                'my_invoice.pdf',
-                open(path, 'rb'),
-                'application/pdf'
-            )
+        result = self.hammer_it("POST", url, None,
+                                "multipart/formdata",
+                                file_name=path)
 
-        }
+        attachment_id = result["AttachableResponse"][0]["Attachable"]["Id"]
 
-        self.verbosity = 10
-
-        request_body = files
-
-        result = self.hammer_it("POST", url, request_body,
-                                "multipart/formdata", files=files)
-
-        attachment_id = None
+        import ipdb;ipdb.set_trace()
 
         return attachment_id
 
     def download_file(self,
                       attachment_id, 
                       destination_dir = '',
-                      alternate_name = ''):
+                      alternate_name = None):
         """
         Download a file to the requested (or default) directory, then also
          return a download link for convenience.
@@ -433,6 +418,7 @@ class QuickBooks():
         success = False
         tries_remaining = 6
 
+        # special hammer it routine for this very un-oauthed GET...
         while not success and tries_remaining >= 0:
 
             if self.verbosity > 0 and tries_remaining < 6:
@@ -450,8 +436,8 @@ class QuickBooks():
 
                 else:
 
-                    filename = my_r.url.split("%2F")[2].split("?")[0]
-                    filename = urllib.unquote(filename)
+                    filename = urllib.unquote(my_r.url)
+                    filename = filename.split("/./")[1].split("?")[0]
 
                 with open(destination_dir + filename, 'wb') as f:
                     for chunk in my_r.iter_content(1024):
@@ -473,7 +459,7 @@ class QuickBooks():
         return link
 
     def hammer_it(self, request_type, url, request_body, content_type,
-                  accept = 'json', files=None, **req_kwargs):
+                  accept = 'json', file_name=None, **req_kwargs):
         """
         A slim version of simonv3's excellent keep_trying method. Among other
          trimmings, it assumes we can only use v3 of the
@@ -483,10 +469,10 @@ class QuickBooks():
 
         if self.session != None:
             session = self.session
-        else:
 
-            #print "Creating new session! (Why wouldn't we have a session!?)"
-            #because __init__doesn't do it!
+        else:
+            # Why wouldn't we have a session already!?
+            # Because __init__doesn't do it!
 
             session = self.create_session()
             self.session = session
@@ -504,13 +490,10 @@ class QuickBooks():
         while trying:
 
             tries += 1
-
             if tries > 1:
-
                 #we don't want to get shut out...
 
                 if self.verbose:
-
                     pass
                     #print "Sleeping for a second to appease the server."
 
@@ -521,67 +504,82 @@ class QuickBooks():
                 print "(this is try#%d)" % tries
 
             if accept == "filelink":
-
                 headers = {}
 
             else:
+                headers = {'Accept': 'application/%s' % accept}
 
-                headers = {
+            if file_name == None:
+                if not request_type == "GET":
+                    headers.update({'Content-Type': 
+                                    'application/%s' % content_type})
 
-                    'Accept': 'application/%s' % accept
-
-                }
-
-            if not request_type == "GET" and files == None:
-
-                headers.update({
-
-                    'Content-Type': 'application/%s' % content_type
-
+            else:
+                boundary = "-------------PythonMultipartPost"
+                headers.update({ 
+                    'Content-Type': 
+                    'multipart/form-data; boundary=%s' % boundary,
+                    'Accept-Encoding': 
+                    'gzip;q=1.0,deflate;q=0.6,identity;q=0.3',
+                    #'application/json',
+                    'User-Agent': 'OAuth gem v0.4.7',
+                    #'Accept': '*/*',
+                    'Accept':'application/json',
+                    'Connection': 'close'
                 })
 
-            elif not files == None:
+                with open(file_name, "rb") as file_handler:
+                    binary_data = file_handler.read()
 
-                headers.update({
+                request_body = textwrap.dedent(
+                    """
+                    --%s
+                    Content-Disposition: form-data; name="file_content_0"; filename="%s"
+                    Content-Length: %d
+                    Content-Type: image/jpeg
+                    Content-Transfer-Encoding: binary
 
-                    'Content-Type': 'application/application/multipart/form-data'
+                    %s
 
-                })
+                    --%s--
+                    """
+                ) % (boundary, file_name, len(binary_data), 
+                     binary_data, boundary)
 
-                request_body = files
 
             my_r = session.request(request_type, url, header_auth,
-                                self.company_id, headers = headers,
-                                data = request_body, **req_kwargs)
+                                   self.company_id, headers = headers,
+                                   data = request_body, verify=False,
+                                   **req_kwargs)
 
-            #import ipdb
-            #ipdb.set_trace()
+            resp_cont_type = my_r.headers['content-type']
 
-            if accept == "json":
+            #import ipdb;ipdb.set_trace()
 
+            if 'xml' in resp_cont_type:
+                result = ET.fromstring(my_r.content)
+                rough_string = ET.tostring(result, "utf-8")
+                reparsed = minidom.parseString(rough_string)
+                print reparsed.toprettyxml(indent="\t")
+
+            elif 'json' in resp_cont_type:
                 try:
-
                     result = my_r.json()
 
                 except:
-
                     if self.verbose or self.verbosity > 0:
                         print my_r,
 
                         if my_r.status_code in [503]:
-
                             print " (Service Unavailable)"
 
                         elif my_r.status_code in [401]:
-
                             print " (Unauthorized -- a dubious response)"
 
                         else:
-
                             print " (json parse failed)"
 
                     if self.verbosity > 8:
-
                         print my_r.text
 
                     result = {"Fault" : {"type":"(inconclusive)"}}
@@ -591,21 +589,18 @@ class QuickBooks():
                    result["Fault"]["type"] == "ValidationFault":
 
                     if self.verbose or self.verbosity > 0:
-
                         print "Fault alert!"
 
                     trying = False
                     print_error = True
 
                 elif tries >= 10:
-
                     trying = False
 
                     if "Fault" in result:
                         print_error = True
 
                 elif "Fault" not in result:
-
                     #sounds like a success
                     trying = False
 
@@ -614,14 +609,11 @@ class QuickBooks():
 
                     print json.dumps(result, indent=1)
 
-            elif accept== 'filelink':
-
+            elif 'plain/text' in resp_cont_type or accept == 'filelink':
                 if not "Fault" in my_r.text or tries >= 10:
-
                     trying = False
 
                 else:
-
                     print "Failed to get file link."
                     if self.verbosity > 4:
                         print my_r.text
@@ -630,7 +622,8 @@ class QuickBooks():
 
             else:
                 raise NotImplementedError("How do I parse a %s response?" \
-                    % accept)
+                                          #% accept)
+                                          % resp_cont_type)
 
         return result
 
