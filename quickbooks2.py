@@ -38,7 +38,6 @@ class QuickBooks():
 
         self.company_id = args.get('company_id', 0)
 
-        self.verbose = 'verbose' in args
         self.verbosity = args.get('verbosity', 0)
 
         self._BUSINESS_OBJECTS = [
@@ -144,7 +143,8 @@ class QuickBooks():
 
         while more:
 
-            r_dict = self.keep_trying(r_type, url, True, self.company_id, payload)
+            r_dict = self.keep_trying(r_type, url, True, 
+                                      self.company_id, payload)
 
             try:
                 access = r_dict['QueryResponse'][qb_object]
@@ -177,7 +177,7 @@ class QuickBooks():
                     pass
 
 
-            if self.verbose:
+            if self.verbosity > 0:
 
                 print "(batch begins with record %d)" % start_position
 
@@ -211,7 +211,7 @@ class QuickBooks():
         url = "https://qb.sbfinance.intuit.com/v3/company/%s/%s" % \
               (self.company_id, qbbo.lower())
 
-        if self.verbose:
+        if self.verbosity > 0:
 
             print "About to create a(n) %s object with this request_body:" \
                 % qbbo
@@ -224,10 +224,10 @@ class QuickBooks():
             new_object = response[qbbo]
 
         else:
-
+            '''
             print "It looks like the create failed. Here's the result:"
             print response
-
+            '''
             return None
 
         new_Id     = new_object["Id"]
@@ -236,14 +236,14 @@ class QuickBooks():
 
         if not hasattr(self,attr_name):
 
-            if self.verbose:
+            if self.verbosity > 0:
                 print "Creating a %ss attribute for this session." % qbbo
 
             self.get_objects(qbbo).update({new_Id:new_object})
 
         else:
 
-            if self.verbose:
+            if self.verbosity > 8:
                 print "Adding this new %s to the existing set of them." \
                     % qbbo
                 print json.dumps(new_object, indent=4)
@@ -296,21 +296,25 @@ class QuickBooks():
         url = "https://quickbooks.api.intuit.com/v3/company/%s/%s" % \
               (self.company_id, qbbo.lower())
 
+        '''
         #work from the existing account json dictionary
-        e_dict = self.get_entity(qbbo, Id)
+        e_dict = self.get_objects(qbbo)[str(Id)]
+        e_dict.update(update_dict)
+        '''
+        # NO! DON'T DO THAT, THEN YOU CAN'T DELETE STUFF YOU WANT TO DELETE!
 
-        udd = json.loads(update_dict)
-
-        e_dict.update(udd)
-
+        e_dict = update_dict
         request_body = json.dumps(e_dict, indent=4)
 
-        if self.verbose:
+        if self.verbosity > 0:
 
             print "About to update %s Id %s with this request_body:" \
                 % (qbbo, Id)
 
             print request_body
+
+            if self.verbosity > 9:
+                raw_input("Waiting...")
 
         response = self.hammer_it("POST", url, request_body, content_type)
 
@@ -319,24 +323,22 @@ class QuickBooks():
             new_object = response[qbbo]
 
         else:
-
-            print "It looks like the create failed. Here's the result:"
+            '''
+            print "It looks like the update failed. Here's the result:"
             print response
-
+            '''
             return None
 
         attr_name = qbbo+"s"
 
         if not hasattr(self,attr_name):
-
-            if self.verbose:
+            if self.verbosity > 0:
                 print "Creating a %ss attribute for this session." % qbbo
 
             self.get_objects(attr_name).update({new_Id:new_object})
 
         else:
-
-            if self.verbose:
+            if self.verbosity > 8:
                 print "Adding this new %s to the existing set of them." \
                     % qbbo
                 print json.dumps(new_object, indent=4)
@@ -345,15 +347,24 @@ class QuickBooks():
 
         return new_object
 
-    def delete_object(self, qbbo, object_id, content_type = "json"):
-        """Don't need to give it an Id, just the whole object as returned by
-        a read operation."""
+    def delete_object(self, qbbo, object_id = None, content_type = "json",
+                      json_dict = None):
+        """
+        Don't need to give it an Id, just the whole object as returned by
+        a read operation.
+        """
 
-        json_dict = self.read_object(qbbo, object_id)
+        if not json_dict:
+            if object_id:
+                json_dict = self.read_object(qbbo, object_id)
+
+            else:
+                raise Exception("Need either an Id or an existing object dict!")
 
         if not 'Id' in json_dict:
+            print json.dumps(json_dict, indent=4)
 
-            return "NO OBJECT FOUND"
+            raise Exception("No Id attribute found in the above dict!")
 
         request_body = json.dumps(json_dict, indent=4)
 
@@ -420,22 +431,17 @@ class QuickBooks():
 
         # special hammer it routine for this very un-oauthed GET...
         while not success and tries_remaining >= 0:
-
             if self.verbosity > 0 and tries_remaining < 6:
-
                 print "This is attempt #%d to download Attachable id %s." % \
                     (6-tries_remaining+1, attachment_id)
 
             try:
-
                 my_r = requests.get(link)
 
                 if alternate_name:
-
                     filename = alternate_name
 
                 else:
-
                     filename = urllib.unquote(my_r.url)
                     filename = filename.split("/./")[1].split("?")[0]
 
@@ -446,14 +452,11 @@ class QuickBooks():
                 success = True
 
             except:
-
                 tries_remaining -= 1
                 time.sleep(1)
                 
                 if tries_remaining == 0:
-
                     print "Max retries reached..."
-
                     raise
                                    
         return link
@@ -466,7 +469,6 @@ class QuickBooks():
          QBO API. It also allows for requests and responses
          in xml OR json. (No xml parsing added yet but the way is paved...)
         """
-
         if self.session != None:
             session = self.session
 
@@ -488,19 +490,12 @@ class QuickBooks():
         tries = 0
 
         while trying:
-
             tries += 1
             if tries > 1:
                 #we don't want to get shut out...
-
-                if self.verbose:
-                    pass
-                    #print "Sleeping for a second to appease the server."
-
                 time.sleep(1)
 
-
-            if self.verbose and tries > 1:
+            if self.verbosity > 0 and tries > 1:
                 print "(this is try#%d)" % tries
 
             if accept == "filelink":
@@ -546,7 +541,6 @@ class QuickBooks():
                 ) % (boundary, file_name, len(binary_data), 
                      binary_data, boundary)
 
-
             my_r = session.request(request_type, url, header_auth,
                                    self.company_id, headers = headers,
                                    data = request_body, verify=False,
@@ -560,36 +554,37 @@ class QuickBooks():
                 result = ET.fromstring(my_r.content)
                 rough_string = ET.tostring(result, "utf-8")
                 reparsed = minidom.parseString(rough_string)
-                print reparsed.toprettyxml(indent="\t")
+                '''
+                if self.verbosity > 7:
+                    print reparsed.toprettyxml(indent="\t")
+                '''
+                if self.verbosity > 0:
+                    print my_r,
+
+                    if my_r.status_code in [503]:
+                        print " (Service Unavailable)"
+
+                    elif my_r.status_code in [401]:
+                        print " (Unauthorized -- a dubious response)"
+
+                    else:
+                        print " (json parse failed)"
+
+                if self.verbosity > 8:
+                    print my_r.text
+                    
+                    result = None
 
             elif 'json' in resp_cont_type:
                 try:
                     result = my_r.json()
 
                 except:
-                    if self.verbose or self.verbosity > 0:
-                        print my_r,
-
-                        if my_r.status_code in [503]:
-                            print " (Service Unavailable)"
-
-                        elif my_r.status_code in [401]:
-                            print " (Unauthorized -- a dubious response)"
-
-                        else:
-                            print " (json parse failed)"
-
-                    if self.verbosity > 8:
-                        print my_r.text
-
                     result = {"Fault" : {"type":"(inconclusive)"}}
 
                 if "Fault" in result and \
                    "type" in result["Fault"] and \
                    result["Fault"]["type"] == "ValidationFault":
-
-                    if self.verbose or self.verbosity > 0:
-                        print "Fault alert!"
 
                     trying = False
                     print_error = True
@@ -604,9 +599,7 @@ class QuickBooks():
                     #sounds like a success
                     trying = False
 
-                if (not trying and print_error) or \
-                   self.verbosity > 8:
-
+                if (not trying and print_error): #or self.verbosity > 8:
                     print json.dumps(result, indent=1)
 
             elif 'plain/text' in resp_cont_type or accept == 'filelink':
@@ -619,6 +612,9 @@ class QuickBooks():
                         print my_r.text
 
                 result = my_r.text
+
+            elif 'text/html' in resp_cont_type:
+                import ipdb;ipdb.set_trace()
 
             else:
                 raise NotImplementedError("How do I parse a %s response?" \
@@ -644,14 +640,14 @@ class QuickBooks():
 
             if tries > 1:
 
-                if self.verbose:
+                if self.verbosity > 0:
 
                     pass
                     #print "Sleeping for a second to appease the server."
 
                 time.sleep(1)
 
-            if self.verbose and tries > 1:
+            if self.verbosity > 0 and tries > 1:
                 print "(this is try#%d)" % tries
 
 
@@ -683,7 +679,7 @@ class QuickBooks():
                     #I've seen, e.g. a ValueError ("No JSON object could be
                     #decoded"), but there could be other errors here...
 
-                    if self.verbose:
+                    if self.verbosity > 0:
 
                         pass
 
@@ -705,7 +701,11 @@ class QuickBooks():
                     #it appears that there are 'false' authentication
                     #errors all the time and you just have to keep trying...
 
-                    trying = True
+                    if tries > 15:
+                        trying = False
+
+                    else:
+                        trying = True
 
         if "Fault" in r_dict:
             print r_dict
@@ -1081,11 +1081,7 @@ class QuickBooks():
                 query_tail = " "+query_tail
             query_string+=query_tail
 
-        #CAN ONE SESSION USE MULTIPLE COMPANIES?
-        #IF NOT, REMOVE THE COMPANY OPTIONALITY
         url = self.base_url_v3 + "/company/%s/query" % self.company_id
-
-        #print query_string
 
         results = self.query_fetch_more(r_type="POST",
                                         header_auth=True,
@@ -1129,7 +1125,7 @@ class QuickBooks():
 
         if not hasattr(self,attr_name) or requery:
 
-            if self.verbose:
+            if self.verbosity > 0:
                 print "Caching list of %ss." % qbbo
 
             object_list = self.query_objects(qbbo, params, query_tail)
