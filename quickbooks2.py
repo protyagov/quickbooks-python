@@ -3,7 +3,7 @@ import xml.etree.ElementTree as ET
 import xmltodict
 from xml.dom import minidom
 import requests, urllib
-import datetime, json, time
+import collections, datetime, json, time
 import textwrap # for uploading files
 
 class QuickBooks():
@@ -64,7 +64,9 @@ class QuickBooks():
 
             "Account","Attachable","Bill","BillPayment",
             "Class","CompanyInfo","CreditMemo","Customer",
-            "Department","Employee","Estimate","Invoice",
+            "Department",
+            "Deposit",
+            "Employee","Estimate","Invoice",
             "Item","JournalEntry","Payment","PaymentMethod",
             "Preferences","Purchase","PurchaseOrder",
             "SalesReceipt","TaxCode","TaxRate","Term",
@@ -81,11 +83,31 @@ class QuickBooks():
 
         self._TRANSACTION_OBJECTS = [
 
-            "Bill", "BillPayment", "CreditMemo", "Estimate", "Invoice",
-            "JournalEntry", "Payment", "Purchase", "PurchaseOrder",
+            "Bill", "BillPayment", "CreditMemo", 
+            "Deposit", 
+            "Estimate", 
+            "Invoice", "JournalEntry", "Payment", "Purchase", "PurchaseOrder",
             "SalesReceipt", "TimeActivity", "VendorCredit"
 
         ]
+
+        # Sometimes in linked transactions, the API calls txn objects by
+        #  another name
+        self._biz_object_correctors = {
+ 
+            "Bill"               : "Bill",
+            "Check"              : "Purchase",
+            "CreditCardCredit"   : "Purchase",
+            "Credit Card Credit"   : "Purchase",
+            "Deposit"            : "Deposit",
+            "Invoice"            : "Invoice",
+            "Journal Entry"      : "JournalEntry",
+            "JournalEntry"       : "JournalEntry",
+            "Payment"            : "Payment",
+            "Vendor Credit"      : "VendorCredit",
+            "CreditMemo"         : "CreditMemo"
+
+        }
 
     def _reconnect_if_time(self):
         current_date = datetime.date.today()
@@ -304,7 +326,7 @@ class QuickBooks():
                     pass
 
 
-            if self.verbosity > 0:
+            if self.verbosity > 2:
 
                 print "(batch begins with record %d)" % start_position
 
@@ -349,7 +371,6 @@ class QuickBooks():
         response = self.hammer_it("POST", url, request_body, content_type)
 
         if qbbo in response:
-
             new_object = response[qbbo]
 
         else:
@@ -363,9 +384,9 @@ class QuickBooks():
 
         attr_name = qbbo+"s"
 
-        if not hasattr(self,attr_name):
+        if not hasattr(self, attr_name):
 
-            if self.verbosity > 0:
+            if self.verbosity > 2:
                 print "Creating a %ss attribute for this session." % qbbo
 
             self.get_objects(qbbo).update({new_Id:new_object})
@@ -386,21 +407,30 @@ class QuickBooks():
         tweak the things you want to change, and send that as the update
         request body (instead of having to create one from scratch)."""
 
+        if qbbo not in self._BUSINESS_OBJECTS:
+            if qbbo in self._biz_object_correctors:
+                qbbo = self._biz_object_correctors[qbbo]
+            
+            else:
+                raise Exception("No business object called %s" \
+                                % qbbo)
+
         Id = str(object_id).replace(".0","")
 
         url = "https://quickbooks.api.intuit.com/v3/company/%s/%s/%s" % \
               (self.company_id, qbbo.lower(), Id)
 
-        if self.verbosity > 0:
+        if self.verbosity > 1:
             print "Reading %s %s." % (qbbo, Id)
 
         response = self.hammer_it("GET", url, None, content_type)
 
         if not qbbo in response:
+            if self.verbosity > 0:
+                print "It looks like the read failed. Here's the result:"
+                print response
 
-            return response
-
-        #otherwise we don't need the time (and outer shell)
+            return None
 
         return response[qbbo]
 
@@ -468,7 +498,7 @@ class QuickBooks():
         attr_name = qbbo+"s"
 
         if not hasattr(self,attr_name):
-            if self.verbosity > 0:
+            if self.verbosity > 2:
                 print "Creating a %ss attribute for this session." % qbbo
 
             self.get_objects(qbbo)
@@ -640,7 +670,7 @@ class QuickBooks():
                 #we don't want to get shut out...
                 time.sleep(1)
 
-            if self.verbosity > 0 and tries > 1:
+            if self.verbosity > 2 and tries > 1:
                 print "(this is try#%d)" % tries
 
             if accept == "filelink":
@@ -785,15 +815,12 @@ class QuickBooks():
             tries += 1
 
             if tries > 1:
-
-                if self.verbosity > 0:
-
-                    pass
-                    #print "Sleeping for a second to appease the server."
+                if self.verbosity > 7:
+                    print "Sleeping for a second to appease the server."
 
                 time.sleep(1)
 
-            if self.verbosity > 0 and tries > 1:
+            if self.verbosity > 2 and tries > 1:
                 print "(this is try#%d)" % tries
 
 
@@ -816,20 +843,24 @@ class QuickBooks():
                 r = session.request(r_type, url, header_auth, realm,
                                     headers = headers, data = payload)
 
+                if self.verbosity > 20:
+                    import ipdb;ipdb.set_trace()
+
                 try:
 
                     r_dict = r.json()
 
                 except:
+                    
+                    #import traceback;traceback.print_exc()
 
                     #I've seen, e.g. a ValueError ("No JSON object could be
                     #decoded"), but there could be other errors here...
 
                     if self.verbosity > 15:
 
-                        import ipdb
                         print "qbo.keep_trying() is failing!"
-                        ipdb.set_trace()
+                        import ipdb;ipdb.set_trace()
 
                     r_dict = {"Fault":{"type":"(Inconclusive)"}}
 
@@ -868,10 +899,6 @@ class QuickBooks():
         url = "https://quickbooks.api.intuit.com/v3/company/%s/" % \
               self.company_id + "reports/%s" % report_name
 
-        #added_params_count = 0 # Why did I add this?
-
-        #import ipdb;ipdb.set_trace()
-
         return self.hammer_it("GET", url, None, "json",
                               **{"params" : params})
 
@@ -885,9 +912,14 @@ class QuickBooks():
         """
 
         if business_object not in self._BUSINESS_OBJECTS:
-            raise Exception("%s not in list of QBO Business Objects." %  \
-                            business_object + " Please use one of the " + \
-                            "following: %s" % self._BUSINESS_OBJECTS)
+
+            if business_object in self._biz_object_correctors:
+                business_object = self._biz_object_correctors[business_object]
+
+            else:
+                raise Exception("%s not in list of QBO Business Objects." %  \
+                                business_object + " Please use one of the " + \
+                                "following: %s" % self._BUSINESS_OBJECTS)
 
         #eventually, we should be able to select more than just *,
         #but chances are any further filtering is easier done with Python
@@ -962,8 +994,11 @@ class QuickBooks():
         #case-sensitive to what Intuit's documentation uses
 
         if qbbo not in self._BUSINESS_OBJECTS:
+            if qbbo in self._biz_object_correctors:
+                qbbo = self._biz_object_correctors[qbbo]
 
-            raise Exception("%s is not a valid QBO Business Object." % qbbo)
+            else:
+                raise Exception("%s is not a valid QBO Business Object." % qbbo)
 
         elif qbbo in self._NAME_LIST_OBJECTS and query_tail == "":
 
@@ -976,23 +1011,32 @@ class QuickBooks():
         #because, say, we've created another Account or Item or something
         #during the session
 
-        if not hasattr(self, attr_name) or requery:
-
-            if self.verbosity > 0:
+        if not hasattr(self, attr_name):
+            setattr(self, attr_name, collections.OrderedDict())
+            requery=True
+        
+        if requery:
+            if self.verbosity > 2:
                 print "Caching list of %ss." % qbbo
+                if not params == {}:
+                    print "params:\n%s" % params
+                if query_tail:
+                    print "query_tail:\n%s" % query_tail
 
             object_list = self.query_objects(qbbo, params, query_tail)
 
             #let's dictionarize it (keyed by Id), though, for easy lookup later
-
             object_dict = {}
 
-            for o in object_list:
-                Id = o["Id"]
-
-                object_dict[Id] = o
-
-            setattr(self, attr_name, object_dict)
+            # Any previously stored objects (with the same ID) will
+            #  be overwritten.
+            for obj in object_list:
+                Id = obj["Id"]
+                '''
+                if Id == "288":
+                    import ipdb;ipdb.set_trace()
+                '''
+                getattr(self, attr_name)[Id] = obj
 
         return getattr(self,attr_name)
 
