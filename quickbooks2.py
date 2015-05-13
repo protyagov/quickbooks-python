@@ -22,19 +22,18 @@ class QuickBooks():
                          "TaxCode", "TaxRate", "Term", "TimeActivity", "Vendor", "VendorCredit", ]
 
     # Sometimes in linked transactions, the API calls txn objects by another name
-    _BUSINESS_OBJECTS_CORRECTORS = {
-        "Bill": "Bill",
-        "Check": "Purchase",
-        "CreditCardCredit": "Purchase",
-        "Credit Card Credit": "Purchase",
-        "Deposit": "Deposit",
-        "Invoice": "Invoice",
-        "Journal Entry": "JournalEntry",
-        "JournalEntry": "JournalEntry",
-        "Payment": "Payment",
-        "Vendor Credit": "VendorCredit",
-        "CreditMemo": "CreditMemo",
-    }
+    _BUSINESS_OBJECTS_CORRECTORS = {"Bill": "Bill",
+                                    "Check": "Purchase",
+                                    "CreditCardCredit": "Purchase",
+                                    "Credit Card Credit": "Purchase",
+                                    "Deposit": "Deposit",
+                                    "Invoice": "Invoice",
+                                    "Journal Entry": "JournalEntry",
+                                    "JournalEntry": "JournalEntry",
+                                    "Payment": "Payment",
+                                    "Vendor Credit": "VendorCredit",
+                                    "CreditMemo": "CreditMemo",
+                                    }
     _NAME_LIST_OBJECTS = ["Account", "Class", "Customer", "Department", "Employee", "Item",
                           "PaymentMethod", "TaxCode", "TaxRate", "Term", "Vendor", ]
 
@@ -43,7 +42,7 @@ class QuickBooks():
 
     # Added by Alex Maslakov for token refreshing (within 30 days of expiry)
     # This is known in Intuit's parlance as a "Reconnect"
-    _attemps_count = 5
+    _attempts_count = 5
     _namespace = "http://platform.intuit.com/api/v1"
     # See here for more:
     # https://developer.intuit.com/v2/docs/0100_accounting/
@@ -74,12 +73,10 @@ class QuickBooks():
             self.expires_on = datetime.datetime.strptime(
                 self.expires_on.replace("-", "").replace("/", ""), "%Y%m%d").date()
 
-        self.reconnect_window_days_count = int(args.get(
-            "reconnect_window_days_count", 30))
-        self.acc_token_changed_callback = args.get(
-            "acc_token_changed_callback", self.default_call_back)
+        self.reconnect_window_days_count = int(args.get("reconnect_window_days_count", 30))
+        self.acc_token_changed_callback = args.get("acc_token_changed_callback", self.default_call_back)
 
-        self.company_id = args.get('company_id', 0)
+        self.company_id = args.get('company_id', '0')
 
         self.verbosity = args.get('verbosity', 0)
         self.error = None
@@ -124,7 +121,7 @@ class QuickBooks():
 
     #-------------------------------------------------------------------------------------------------------------------
     def _reconnect(self, i=1):
-        if i > self._attemps_count:
+        if i > self._attempts_count:
             print "Unable to reconnect, there're no attempts left " \
                   "({} attempts sent).".format(i)
             return False
@@ -264,63 +261,31 @@ class QuickBooks():
         return self.session
 
     #-------------------------------------------------------------------------------------------------------------------
-    def query_fetch_more(self, r_type, header_auth, realm, qb_object, original_payload=''):
-        """ Wrapper script around keep_trying to fetch more results if
-        there are more. """
-
-        # 500 is the maximum number of results returned by QB
-
-        max_results = 500
-        start_position = 0
+    def _fetch(self, r_type, qb_object, original_payload='', batch_size=500):
+        """
+        Wrapper script around keep_trying to fetch more results if there are more.
+        batch_size = 500 is the maximum number of results returned by QB
+        """
+        start_position = 1
         more = True
         data_set = []
         url = self.base_url_v3 + "/company/%s/query" % self.company_id
 
-        # Edit the payload to return more results.
-
-        payload = original_payload + " MAXRESULTS " + str(max_results)
+        payload = '%s MAXRESULTS %d' % (original_payload, batch_size)
 
         while more:
-
-            r_dict = self.keep_trying(r_type, url, True,
-                                      self.company_id, payload)
+            r_dict = self.hammer_it(r_type, url, payload, 'text')
 
             try:
-                access = r_dict['QueryResponse'][qb_object]
+                more = len(r_dict['QueryResponse'][qb_object]) > batch_size
             except:
-                if 'QueryResponse' in r_dict and r_dict['QueryResponse'] == {}:
-                    #print "Query OK, no results: %s" % r_dict['QueryResponse']
-                    return []
-                else:
-                    print "FAILED", r_dict
-                    r_dict = self.keep_trying(r_type, url, True, self.company_id, payload)
-
-            # For some reason the totalCount isn't returned for some queries,
-            # in that case, check the length, even though that actually requires
-            # measuring
-            try:
-                result_count = int(r_dict['QueryResponse']['totalCount'])
-                if result_count < max_results:
-                    more = False
-            except KeyError:
-                try:
-                    result_count = len(r_dict['QueryResponse'][qb_object])
-                    if result_count < max_results:
-                        more = False
-                except KeyError:
-                    print "\n\n ERROR", r_dict
-                    pass
+                return data_set
 
             if self.verbosity > 2:
                 print "(batch begins with record %d)" % start_position
 
-            # Just some math to prepare for the next iteration
-            if start_position == 0:
-                start_position = 1
-
-            start_position = start_position + max_results
-            payload = "{} STARTPOSITION {} MAXRESULTS {}".format(
-                original_payload, start_position, max_results)
+            start_position += batch_size
+            payload = "%s STARTPOSITION %d MAXRESULTS %d" % (original_payload, start_position, batch_size)
 
             data_set += r_dict['QueryResponse'][qb_object]
 
@@ -336,9 +301,7 @@ class QuickBooks():
         session's brain.
         """
 
-        if qbbo not in self._BUSINESS_OBJECTS:
-            raise Exception("%s is not a valid QBO Business Object." % qbbo,
-                            " (Note that this validation is case sensitive.)")
+        qbbo = self._validate_object_name(qbbo)
 
         url = "%s/company/%s/%s" % (self.base_url_v3, self.company_id, qbbo.lower())
 
@@ -383,11 +346,7 @@ class QuickBooks():
         tweak the things you want to change, and send that as the update
         request body (instead of having to create one from scratch)."""
 
-        if qbbo not in self._BUSINESS_OBJECTS:
-            if qbbo in self._BUSINESS_OBJECTS_CORRECTORS:
-                qbbo = self._BUSINESS_OBJECTS_CORRECTORS[qbbo]
-            else:
-                raise Exception("No business object called %s" % qbbo)
+        qbbo = self._validate_object_name(qbbo)
 
         Id = str(object_id).replace(".0", "")
 
@@ -413,12 +372,8 @@ class QuickBooks():
         command on what you want to update. The alternative is forming a valid
         update request_body from scratch, which doesn't look like fun to me.
         """
-
+        qbbo = self._validate_object_name(qbbo)
         Id = str(Id).replace(".0", "")
-
-        if qbbo not in self._BUSINESS_OBJECTS:
-            raise Exception("%s is not a valid QBO Business Object." % qbbo,
-                            " (Note that this validation is case sensitive.)")
 
         """
         url = "https://qb.sbfinance.intuit.com/v3/company/%s/%s" % \
@@ -638,21 +593,16 @@ class QuickBooks():
             else:
                 headers = {'Accept': 'application/%s' % accept}
 
-            if file_name == None:
-                if not request_type == "GET":
-                    headers.update({'Content-Type':
-                                        'application/%s' % content_type})
+            if file_name is None:
+                if request_type != "GET":
+                    headers.update({'Content-Type': 'application/%s' % content_type})
 
             else:
                 boundary = "-------------PythonMultipartPost"
                 headers.update({
-                    'Content-Type':
-                        'multipart/form-data; boundary=%s' % boundary,
-                    'Accept-Encoding':
-                        'gzip;q=1.0,deflate;q=0.6,identity;q=0.3',
-                    #'application/json',
+                    'Content-Type': 'multipart/form-data; boundary=%s' % boundary,
+                    'Accept-Encoding': 'gzip;q=1.0,deflate;q=0.6,identity;q=0.3',
                     'User-Agent': 'OAuth gem v0.4.7',
-                    #'Accept': '*/*',
                     'Accept': 'application/json',
                     'Connection': 'close'
                 })
@@ -712,9 +662,7 @@ class QuickBooks():
                 except:
                     result = {"Fault": {"type": "(synthetic, inconclusive)"}}
 
-                if "Fault" in result and \
-                                "type" in result["Fault"] and \
-                                result["Fault"]["type"] == "ValidationFault":
+                if "Fault" in result and "type" in result["Fault"] and result["Fault"]["type"] == "ValidationFault":
 
                     trying = False
                     print_error = True
@@ -748,7 +696,7 @@ class QuickBooks():
                 result = my_r.text
 
             elif 'text/html' in resp_cont_type:
-                import ipdb;
+                import ipdb
 
                 ipdb.set_trace()
 
@@ -758,95 +706,6 @@ class QuickBooks():
                                           % resp_cont_type)
 
         return result
-
-    #-------------------------------------------------------------------------------------------------------------------
-    def keep_trying(self, r_type, url, header_auth, realm, payload=''):
-        """
-        Wrapper script to session.request() to continue trying at the QB
-        API until it returns something good, because the QB API is
-        inconsistent
-        """
-
-        session = self._get_session()
-
-        trying = True
-        tries = 0
-        while trying:
-            tries += 1
-
-            if tries > 1:
-                if self.verbosity > 7:
-                    print "Sleeping for a second to appease the server."
-
-                time.sleep(1)
-
-            if self.verbosity > 2 and tries > 1:
-                print "(this is try#%d)" % tries
-
-            if "v2" in url:
-                r = session.request(r_type, url, header_auth,
-                                    realm, data=payload)
-
-                r_dict = xmltodict.parse(r.text)
-
-                if "FaultInfo" not in r_dict or tries > 10:
-                    trying = False
-            else:
-                headers = {
-                    'Content-Type': 'application/text',
-                    'Accept': 'application/json'
-                }
-
-                #print r_type,url,header_auth,realm,headers,payload
-                #quit()
-                r = session.request(r_type, url, header_auth, realm,
-                                    headers=headers, data=payload)
-
-                if self.verbosity > 20:
-                    import ipdb;
-
-                    ipdb.set_trace()
-
-                try:
-
-                    r_dict = r.json()
-
-                except:
-
-                    #import traceback;traceback.print_exc()
-
-                    #I've seen, e.g. a ValueError ("No JSON object could be
-                    #decoded"), but there could be other errors here...
-
-                    if self.verbosity > 15:
-                        print "qbo.keep_trying() is failing!"
-                        import ipdb;
-
-                        ipdb.set_trace()
-
-                    r_dict = {"Fault": {"type": "(Inconclusive)"}}
-
-                if "Fault" not in r_dict or tries > 10:
-
-                    trying = False
-
-                elif "Fault" in r_dict and r_dict["Fault"]["type"] == \
-                        "AUTHENTICATION":
-
-                    #Initially I thought to quit here, but actually
-                    #it appears that there are 'false' authentication
-                    #errors all the time and you just have to keep trying...
-
-                    if tries > 15:
-                        trying = False
-
-                    else:
-                        trying = True
-
-        if "Fault" in r_dict:
-            print r_dict
-
-        return r_dict
 
     #-------------------------------------------------------------------------------------------------------------------
     def get_report(self, report_name, params=None):
@@ -928,36 +787,39 @@ class QuickBooks():
                 query_tail = " " + query_tail
             query_string += query_tail
 
-        results = self.query_fetch_more(r_type="POST",
-                                        header_auth=True,
-                                        realm=self.company_id,
-                                        qb_object=business_object,
-                                        original_payload=query_string)
+        return self._fetch(r_type="POST", qb_object=business_object, original_payload=query_string)
 
+    #-------------------------------------------------------------------------------------------------------------------
+    def is_object(self, business_object, where_clause=None):
+        """
+        Runs a query-type request against the QBOv3 API
+        Gives you the option to create an AND-joined query by parameter
+            or just pass in a whole query tail
+        The parameter dicts should be keyed by parameter name and
+            have twp-item tuples for values, which are operator and criterion
+        """
+
+        business_object = self._validate_object_name(business_object)
+
+        if where_clause:
+            query_string = "SELECT Id FROM %s %s" % (business_object, where_clause)
+        else:
+            query_string = "SELECT Id FROM %s " % business_object
+
+        results = self._fetch("POST", business_object, original_payload=query_string, batch_size=1)
         return results
 
     #-------------------------------------------------------------------------------------------------------------------
     def get_objects(self, qbbo, requery=False, params={}, query_tail=""):
         """
-        Rather than have to look up the account that's associate with an
-        invoice item, for example, which requires another query, it might
-        be easier to just have a local dict for reference.
-        The same is true with linked transactions, so transactions can
-        also be cloned with this method
+        Rather than have to look up the account that's associate with an invoice item, for example, which requires
+        another query, it might be easier to just have a local dict for reference. The same is true with linked
+        transactions, so transactions can also be cloned with this method
         """
 
-        #we'll call the attributes by the Business Object's name + 's',
-        #case-sensitive to what Intuit's documentation uses
+        qbbo = self._validate_object_name(qbbo)
 
-        if qbbo not in self._BUSINESS_OBJECTS:
-            if qbbo in self._BUSINESS_OBJECTS_CORRECTORS:
-                qbbo = self._BUSINESS_OBJECTS_CORRECTORS[qbbo]
-
-            else:
-                raise Exception("%s is not a valid QBO Business Object." % qbbo)
-
-        elif qbbo in self._NAME_LIST_OBJECTS and query_tail == "":
-
+        if qbbo in self._NAME_LIST_OBJECTS and query_tail == "":
             #to avoid confusion from 'deleted' accounts later...
             query_tail = "WHERE Active IN (true,false)"
 
@@ -1001,7 +863,6 @@ class QuickBooks():
         """
         returns dict of dicts of ALL the Business Objects of each of these types (filtering with params and query_tail)
         """
-
         object_dicts = {}  # {qbbo:[object_list]}
 
         for qbbo in qbbo_list:
