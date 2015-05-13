@@ -16,6 +16,31 @@ class QuickBooks():
     access_token_url = "https://oauth.intuit.com/oauth/v1/get_access_token"
     authorize_url = "https://appcenter.intuit.com/Connect/Begin"
 
+    _BUSINESS_OBJECTS = ["Account", "Attachable", "Bill", "BillPayment", "Class", "CompanyInfo", "CreditMemo",
+                         "Customer", "Department", "Deposit", "Employee", "Estimate", "Invoice", "Item", "JournalEntry",
+                         "Payment", "PaymentMethod", "Preferences", "Purchase", "PurchaseOrder", "SalesReceipt",
+                         "TaxCode", "TaxRate", "Term", "TimeActivity", "Vendor", "VendorCredit", ]
+
+    # Sometimes in linked transactions, the API calls txn objects by another name
+    _BUSINESS_OBJECTS_CORRECTORS = {
+        "Bill": "Bill",
+        "Check": "Purchase",
+        "CreditCardCredit": "Purchase",
+        "Credit Card Credit": "Purchase",
+        "Deposit": "Deposit",
+        "Invoice": "Invoice",
+        "Journal Entry": "JournalEntry",
+        "JournalEntry": "JournalEntry",
+        "Payment": "Payment",
+        "Vendor Credit": "VendorCredit",
+        "CreditMemo": "CreditMemo",
+    }
+    _NAME_LIST_OBJECTS = ["Account", "Class", "Customer", "Department", "Employee", "Item",
+                          "PaymentMethod", "TaxCode", "TaxRate", "Term", "Vendor", ]
+
+    _TRANSACTION_OBJECTS = ["Bill", "BillPayment", "CreditMemo", "Deposit", "Estimate", "Invoice", "JournalEntry",
+                            "Payment", "Purchase", "PurchaseOrder", "SalesReceipt", "TimeActivity", "VendorCredit"]
+
     # Added by Alex Maslakov for token refreshing (within 30 days of expiry)
     # This is known in Intuit's parlance as a "Reconnect"
     _attemps_count = 5
@@ -27,8 +52,8 @@ class QuickBooks():
     # Things needed for authentication
     qbService = None
 
+    #-------------------------------------------------------------------------------------------------------------------
     def __init__(self, **args):
-
         if 'cred_path' in args:
             self.read_creds_from_file(args['cred_path'])
 
@@ -44,13 +69,10 @@ class QuickBooks():
         self.request_token = args.get('request_token', '')
         self.request_token_secret = args.get('request_token_secret', '')
 
-        self.expires_on = args.get("expires_on",
-                                   datetime.datetime.today().date() + \
-                                   datetime.timedelta(days=180))
+        self.expires_on = args.get("expires_on", datetime.datetime.today().date() + datetime.timedelta(days=180))
         if isinstance(self.expires_on, (str, unicode)):
             self.expires_on = datetime.datetime.strptime(
-                self.expires_on.replace("-", "").replace("/", ""),
-                "%Y%m%d").date()
+                self.expires_on.replace("-", "").replace("/", ""), "%Y%m%d").date()
 
         self.reconnect_window_days_count = int(args.get(
             "reconnect_window_days_count", 30))
@@ -61,55 +83,6 @@ class QuickBooks():
 
         self.verbosity = args.get('verbosity', 0)
         self.error = None
-
-        self._BUSINESS_OBJECTS = [
-
-            "Account", "Attachable", "Bill", "BillPayment",
-            "Class", "CompanyInfo", "CreditMemo", "Customer",
-            "Department",
-            "Deposit",
-            "Employee", "Estimate", "Invoice",
-            "Item", "JournalEntry", "Payment", "PaymentMethod",
-            "Preferences", "Purchase", "PurchaseOrder",
-            "SalesReceipt", "TaxCode", "TaxRate", "Term",
-            "TimeActivity", "Vendor", "VendorCredit"
-
-        ]
-
-        self._NAME_LIST_OBJECTS = [
-
-            "Account", "Class", "Customer", "Department", "Employee", "Item",
-            "PaymentMethod", "TaxCode", "TaxRate", "Term", "Vendor"
-
-        ]
-
-        self._TRANSACTION_OBJECTS = [
-
-            "Bill", "BillPayment", "CreditMemo",
-            "Deposit",
-            "Estimate",
-            "Invoice", "JournalEntry", "Payment", "Purchase", "PurchaseOrder",
-            "SalesReceipt", "TimeActivity", "VendorCredit"
-
-        ]
-
-        # Sometimes in linked transactions, the API calls txn objects by
-        #  another name
-        self._biz_object_correctors = {
-
-            "Bill": "Bill",
-            "Check": "Purchase",
-            "CreditCardCredit": "Purchase",
-            "Credit Card Credit": "Purchase",
-            "Deposit": "Deposit",
-            "Invoice": "Invoice",
-            "Journal Entry": "JournalEntry",
-            "JournalEntry": "JournalEntry",
-            "Payment": "Payment",
-            "Vendor Credit": "VendorCredit",
-            "CreditMemo": "CreditMemo"
-
-        }
 
     #-------------------------------------------------------------------------------------------------------------------
     @property
@@ -134,12 +107,10 @@ class QuickBooks():
                     print "Unable to reconnect, try again later, you have " \
                           "{} days left to do that".format(days_diff)
         else:
-            raise "The token is expired, unable to reconnect. " \
-                  "Please get a new one."
+            raise Exception("The token is expired, unable to reconnect. Please get a new one.")
 
     #-------------------------------------------------------------------------------------------------------------------
-    def default_call_back(self, access_token, access_token_secret,
-                          company_id, expires_on):
+    def default_call_back(self, access_token, access_token_secret, company_id, expires_on):
         """
         In case the caller of the QuickBooks session doesn't provide a callback
          function, new creds (after a reconnect) won't be ENTIRELY lost...
@@ -322,11 +293,7 @@ class QuickBooks():
                     return []
                 else:
                     print "FAILED", r_dict
-                    r_dict = self.keep_trying(r_type,
-                                              url,
-                                              True,
-                                              self.company_id,
-                                              payload)
+                    r_dict = self.keep_trying(r_type, url, True, self.company_id, payload)
 
             # For some reason the totalCount isn't returned for some queries,
             # in that case, check the length, even though that actually requires
@@ -346,7 +313,6 @@ class QuickBooks():
 
             if self.verbosity > 2:
                 print "(batch begins with record %d)" % start_position
-
 
             # Just some math to prepare for the next iteration
             if start_position == 0:
@@ -411,34 +377,31 @@ class QuickBooks():
 
         return new_object
 
+    #-------------------------------------------------------------------------------------------------------------------
     def read_object(self, qbbo, object_id, content_type="json"):
         """Makes things easier for an update because you just do a read,
         tweak the things you want to change, and send that as the update
         request body (instead of having to create one from scratch)."""
 
         if qbbo not in self._BUSINESS_OBJECTS:
-            if qbbo in self._biz_object_correctors:
-                qbbo = self._biz_object_correctors[qbbo]
-
+            if qbbo in self._BUSINESS_OBJECTS_CORRECTORS:
+                qbbo = self._BUSINESS_OBJECTS_CORRECTORS[qbbo]
             else:
-                raise Exception("No business object called %s" \
-                                % qbbo)
+                raise Exception("No business object called %s" % qbbo)
 
         Id = str(object_id).replace(".0", "")
 
-        url = "https://quickbooks.api.intuit.com/v3/company/%s/%s/%s" % \
-              (self.company_id, qbbo.lower(), Id)
+        url = "%s/company/%s/%s/%s" % (self.base_url_v3, self.company_id, qbbo.lower(), Id)
 
         if self.verbosity > 1:
             print "Reading %s %s." % (qbbo, Id)
 
         response = self.hammer_it("GET", url, None, content_type)
 
-        if not qbbo in response:
+        if qbbo not in response:
             if self.verbosity > 0:
                 print "It looks like the read failed. Here's the result:"
                 print response
-
             return None
 
         return response[qbbo]
@@ -465,11 +428,9 @@ class QuickBooks():
         """
 
         #see this link for url troubleshooting info:
-        #http://stackoverflow.com/questions/23333300/whats-the-correct-uri-
-        # for-qbo-v3-api-update-operation/23340464#23340464
+        #http://stackoverflow.com/questions/23333300/whats-the-correct-uri-for-qbo-v3-api-update-operation/23340464#23340464
 
-        url = "https://quickbooks.api.intuit.com/v3/company/%s/%s" % \
-              (self.company_id, qbbo.lower())
+        url = "%s/company/%s/%s" % (self.base_url_v3, self.company_id, qbbo.lower())
 
         '''
         #work from the existing account json dictionary
@@ -534,27 +495,23 @@ class QuickBooks():
         if not json_dict:
             if Id:
                 json_dict = self.read_object(qbbo, Id)
-
             else:
                 raise Exception("Need either an Id or an existing object dict!")
 
-        if not 'Id' in json_dict:
+        if 'Id' not in json_dict:
             print json.dumps(json_dict, indent=4)
-
             raise Exception("No Id attribute found in the above dict!")
 
         request_body = json.dumps(json_dict, indent=4)
 
-        url = "https://quickbooks.api.intuit.com/v3/company/%s/%s" % \
-              (self.company_id, qbbo.lower())
+        url = "%s/company/%s/%s" % (self.base_url_v3, self.company_id, qbbo.lower())
 
         if self.verbosity > 0:
             print "Deleting %s %s." % (qbbo, Id)
 
-        response = self.hammer_it("POST", url, request_body, content_type,
-                                  **{"params": {"operation": "delete"}})
+        response = self.hammer_it("POST", url, request_body, content_type, **{"params": {"operation": "delete"}})
 
-        if not qbbo in response:
+        if qbbo not in response:
             return response
 
         attr_name = qbbo + "s"
@@ -571,8 +528,7 @@ class QuickBooks():
         Either way, it should return the id the attachment.
         """
 
-        url = "https://quickbooks.api.intuit.com/v3/company/%s/upload" % \
-              self.company_id
+        url = "%s/company/%s/upload" % (self.base_url_v3, self.company_id)
 
         bare_name, extension = path.rsplit("/", 1)[-1].rsplit(".", 1)
 
@@ -582,9 +538,7 @@ class QuickBooks():
         if name == "same":
             name = bare_name
 
-        result = self.hammer_it("POST", url, None,
-                                "multipart/formdata",
-                                file_name=path)
+        result = self.hammer_it("POST", url, None, "multipart/formdata", file_name=path)
 
         attachment_id = result["AttachableResponse"][0]["Attachable"]["Id"]
 
@@ -600,8 +554,7 @@ class QuickBooks():
         Download a file to the requested (or default) directory, then also
          return a download link for convenience.
         """
-        url = "https://quickbooks.api.intuit.com/v3/company/%s/download/%s" % \
-              (self.company_id, attachment_id)
+        url = "%s/company/%s/download/%s" % (self.base_url_v3, self.company_id, attachment_id)
 
         # Custom accept for file link!
         link = self.hammer_it("GET", url, None, "json", accept="filelink")
@@ -899,17 +852,24 @@ class QuickBooks():
     def get_report(self, report_name, params=None):
         """
         Tries to use the QBO reporting API:
-        https://developer.intuit.com/docs/0025_quickbooksapi/
-         0050_data_services/reports
+        https://developer.intuit.com/docs/0025_quickbooksapi/0050_data_services/reports
         """
 
-        if params == None:
+        if params is None:
             params = {}
 
-        url = "https://quickbooks.api.intuit.com/v3/company/%s/" % \
-              self.company_id + "reports/%s" % report_name
+        url = "%s/company/%s/reports/%s" % (self.base_url_v3, self.company_id, report_name)
 
         return self.hammer_it("GET", url, None, "json", **{"params": params})
+
+    #-------------------------------------------------------------------------------------------------------------------
+    def _validate_object_name(self, business_object):
+        if business_object in self._BUSINESS_OBJECTS:
+            return business_object
+        if business_object in self._BUSINESS_OBJECTS_CORRECTORS:
+            return self._BUSINESS_OBJECTS_CORRECTORS[business_object]
+        raise Exception("%s not in list of QBO Business Objects. Please use one of the following: %s" %
+                        (business_object, self._BUSINESS_OBJECTS))
 
     #-------------------------------------------------------------------------------------------------------------------
     def query_objects(self, business_object, params={}, query_tail=""):
@@ -921,15 +881,7 @@ class QuickBooks():
             have twp-item tuples for values, which are operator and criterion
         """
 
-        if business_object not in self._BUSINESS_OBJECTS:
-
-            if business_object in self._biz_object_correctors:
-                business_object = self._biz_object_correctors[business_object]
-
-            else:
-                raise Exception("%s not in list of QBO Business Objects." % \
-                                business_object + " Please use one of the " + \
-                                "following: %s" % self._BUSINESS_OBJECTS)
+        business_object = self._validate_object_name(business_object)
 
         #eventually, we should be able to select more than just *,
         #but chances are any further filtering is easier done with Python
@@ -976,8 +928,6 @@ class QuickBooks():
                 query_tail = " " + query_tail
             query_string += query_tail
 
-        url = self.base_url_v3 + "/company/%s/query" % self.company_id
-
         results = self.query_fetch_more(r_type="POST",
                                         header_auth=True,
                                         realm=self.company_id,
@@ -986,11 +936,8 @@ class QuickBooks():
 
         return results
 
-    def get_objects(self,
-                    qbbo,
-                    requery=False,
-                    params={},
-                    query_tail=""):
+    #-------------------------------------------------------------------------------------------------------------------
+    def get_objects(self, qbbo, requery=False, params={}, query_tail=""):
         """
         Rather than have to look up the account that's associate with an
         invoice item, for example, which requires another query, it might
@@ -1003,8 +950,8 @@ class QuickBooks():
         #case-sensitive to what Intuit's documentation uses
 
         if qbbo not in self._BUSINESS_OBJECTS:
-            if qbbo in self._biz_object_correctors:
-                qbbo = self._biz_object_correctors[qbbo]
+            if qbbo in self._BUSINESS_OBJECTS_CORRECTORS:
+                qbbo = self._BUSINESS_OBJECTS_CORRECTORS[qbbo]
 
             else:
                 raise Exception("%s is not a valid QBO Business Object." % qbbo)
@@ -1049,13 +996,13 @@ class QuickBooks():
 
         return getattr(self, attr_name)
 
+    #-------------------------------------------------------------------------------------------------------------------
     def object_dicts(self, qbbo_list=[], requery=False, params={}, query_tail=""):
         """
-        returns a dict of dicts of ALL the Business Objects of
-        each of these types (filtering with params and query_tail)
+        returns dict of dicts of ALL the Business Objects of each of these types (filtering with params and query_tail)
         """
 
-        object_dicts = {}  #{qbbo:[object_list]}
+        object_dicts = {}  # {qbbo:[object_list]}
 
         for qbbo in qbbo_list:
 
@@ -1066,34 +1013,22 @@ class QuickBooks():
                 #just something to avoid confusion from 'deleted' accounts later
                 query_tail = "WHERE Active IN (true,false)"
 
-            object_dicts[qbbo] = self.get_objects(qbbo,
-                                                  requery,
-                                                  params,
-                                                  query_tail)
+            object_dicts[qbbo] = self.get_objects(qbbo, requery, params, query_tail)
 
         return object_dicts
 
+    #-------------------------------------------------------------------------------------------------------------------
     def names(self, requery=False, params={}, query_tail="WHERE Active IN (true,false)"):
         """
-        get a dict of every Name List Business Object (of every type)
-        results are subject to the filter if applicable
-        returned dict has two dimensions:
-        name = names[qbbo][Id]
+        get a dict of every Name List Business Object (of every type) results are subject to the filter if applicable
+        returned dict has two dimensions:  name = names[qbbo][Id]
         """
+        return self.object_dicts(self._NAME_LIST_OBJECTS, requery, params, query_tail)
 
-        return self.object_dicts(self._NAME_LIST_OBJECTS, requery,
-                                 params, query_tail)
-
-    def transactions(self,
-                     requery=False,
-                     params={},
-                     query_tail=""):
+    #-------------------------------------------------------------------------------------------------------------------
+    def transactions(self, requery=False, params={}, query_tail=""):
         """
-        get a dict of every Transaction Business Object (of every type)
-        results are subject to the filter if applicable
-        returned dict has two dimensions:
-        transaction = transactions[qbbo][Id]
+        get a dict of every Transaction Business Object (of every type) results are subject to the filter if applicable
+        returned dict has two dimensions: transaction = transactions[qbbo][Id]
         """
-
-        return self.object_dicts(self._TRANSACTION_OBJECTS, requery,
-                                 params, query_tail)
+        return self.object_dicts(self._TRANSACTION_OBJECTS, requery, params, query_tail)
