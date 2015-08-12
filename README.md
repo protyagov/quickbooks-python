@@ -1,12 +1,10 @@
 quickbooks-python
 =================
 
-This builds on the work of simonv3. I'm adding some functionality to handle additional accounting functions,
-beginning with a programmatic export of a chart of accounts and a facility for generating ledger lines from transaction business objects (e.g. Bill, JournalEntry, Purchase).
+For base I took work of simonv3 and adopted it to my specific needs to use in my Django Rest Framework project. Decided to share project so that someone else might have benefit of it. In particular I have changed/added:
 
-I'm new to github, eager to build some cool things here, and welcome your constructive feedback on how to
-improve my coding, collaboration, and knowledge base.
-
-Generally when using this module (or any of the QBO v3 API wrappers out there), keep in mind that there are some glaring omissions in it's functionality that (AFAIK) no one is able to get around programmatically. For example, you can't access (or create, update, or delete, obvi) Deposits or Transfers.
+- Support for *sandbox* servers. Gets controled by **is_sandbox** property.
+- Replace println statemes with python logging framework. For verbose output used DEBUG or INFO levels.
+- 
 
 Intuit now has a reporting API you can use so I deleted the makeshift ones I contributed.
